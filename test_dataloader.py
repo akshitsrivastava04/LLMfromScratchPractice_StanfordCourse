@@ -67,7 +67,7 @@ class TestGPTDatasetV1(unittest.TestCase):
 class TestCreateDataLoader(unittest.TestCase):
     def setUp(self):
         self.tokenizer = MockTokenizer()
-        self.text = "A" * 100 # 100 tokens
+        self.text = "".join([chr(i) for i in range(100)])
         self.batch_size = 2
         self.max_length = 4
         self.stride = 4
@@ -98,13 +98,65 @@ class TestCreateDataLoader(unittest.TestCase):
         # 96 / 4 = 24 samples.
         # batch_size=2 -> 12 batches.
         
+        print("\n--- Testing Batch Dimensions ---")
         batch_count = 0
         for inputs, targets in dataloader:
             batch_count += 1
+            print(f"Batch {batch_count}: Inputs {inputs.shape}, Targets {targets.shape}")
             self.assertEqual(inputs.shape, (self.batch_size, self.max_length))
             self.assertEqual(targets.shape, (self.batch_size, self.max_length))
             
         self.assertEqual(batch_count, 12)
+
+    def test_iteration_content(self):
+        """Test iterating over the dataloader using iter() and next() to simulate training loop."""
+        dataloader = create_dataloader(
+            self.text, 
+            self.tokenizer, 
+            batch_size=self.batch_size, 
+            max_length=self.max_length, 
+            stride=self.stride,
+            shuffle=False
+        )
+        
+        data_iter = iter(dataloader)
+        num_batches = 0
+        
+        # We expect 12 batches (calculated in test_batch_dimensions)
+        expected_batches = 12
+        
+        print("\n--- Testing Iteration Content ---")
+        for i in range(expected_batches):
+            try:
+                # Simulate fetching the next batch
+                inputs, targets = next(data_iter)
+                num_batches += 1
+                
+                print(f"Iter {i}: Inputs {inputs.shape}, Targets {targets.shape}")
+                print(f"  Input[0]: {inputs[0].tolist()}")
+                print(f"  Target[0]: {targets[0].tolist()}")
+
+                # Verify batch structure
+                self.assertIsInstance(inputs, torch.Tensor)
+                self.assertIsInstance(targets, torch.Tensor)
+                self.assertEqual(inputs.shape, (self.batch_size, self.max_length))
+                self.assertEqual(targets.shape, (self.batch_size, self.max_length))
+                
+                # Verify that targets are shifted by 1 relative to inputs
+                # This is a key property of the GPT dataset
+                # inputs:  [t0, t1, t2, t3]
+                # targets: [t1, t2, t3, t4]
+                # So inputs[:, 1:] should equal targets[:, :-1]
+                self.assertTrue(torch.equal(inputs[:, 1:], targets[:, :-1]))
+                
+            except StopIteration:
+                self.fail(f"DataLoader stopped early at batch {i}")
+        
+        # Verify that the iterator is exhausted
+        with self.assertRaises(StopIteration):
+            next(data_iter)
+            
+        self.assertEqual(num_batches, expected_batches)
 
 if __name__ == '__main__':
     unittest.main()

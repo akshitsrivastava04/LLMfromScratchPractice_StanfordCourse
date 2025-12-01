@@ -1,6 +1,7 @@
 import torch 
 from torch.utils.data import Dataset, DataLoader 
 from BPE_from_scratch import train_bpe, download_tinystories, load_and_preprocess
+from torch.nn import Embedding
 
 class GPTDatasetV1(Dataset):
     def __init__(self, txt, tokenizer, max_length, stride):
@@ -32,33 +33,69 @@ def create_dataloader(txt, tokenizer, batch_size=4, max_length=256, stride=128, 
     )
     return dataloader 
 
+def token_embedding(vocab_size, output_dim):
+    torch.manual_seed(42)
+    embedding_layer = Embedding(vocab_size, output_dim)
+    return embedding_layer
+
 if __name__ == "__main__":
     filename = "TinyStories-valid.txt"
     download_tinystories(filename)
     full_text = load_and_preprocess(filename)
 
-    # 2. Prepare Tokenizer 
-    # Since we aren't loading a saved one, we train it quickly on a subset
+    # --- SANITY CHECK 1: Is the text file actually English? ---
+    print(f"Text Length: {len(full_text)}")
+    print(f"First 100 chars: {repr(full_text[:100])}")
+    # If this prints empty strings or weird symbols, delete the .txt file and re-download.
+
     print("Training Tokenizer...")
-    # Using the function imported from bpe.py
     tokenizer = train_bpe(full_text[:10000], num_merges=100) 
 
-    # 3. Create Data Loader
+    # --- SANITY CHECK 2: What is ID 65? ---
+    # If your previous output was all 65s, let's see what 65 means.
+    print(f"Token 65 decodes to: '{tokenizer.decode([65])}'")
+
     print("Creating DataLoader...")
     dataloader = create_dataloader(
-        txt=full_text[:5000], # Use a small slice for testing
+        txt=full_text, 
         tokenizer=tokenizer,
         batch_size=2,
         max_length=4,
         stride=4
     )
 
-    # 4. Verify Output
     print("\n--- Visual Inspection ---")
     data_iter = iter(dataloader)
+    first_batch = next(data_iter)
+    print(first_batch)
     inputs, targets = next(data_iter)
 
     print(f"Input Shape: {inputs.shape}")
     print(f"Target Shape: {targets.shape}")
     print(f"Input example: {inputs[0]}")
     print(f"Target example: {targets[0]}")
+    
+    # --- SANITY CHECK 3: Do inputs and targets differ? ---
+    # The target must be the input shifted by 1.
+    # We check if the last token of input matches the 2nd-to-last of target
+    is_shifted = inputs[0][1] == targets[0][0]
+    print(f"Shift logic holds: {is_shifted}")
+
+    print("\n--- 4. TEST EMBEDDING COMPATIBILITY ---")
+    # This checks if your Tokenizer IDs exceed the Embedding Layer size (IndexError)
+    NUM_MERGES = 100
+    VOCAB_SIZE = 256 + NUM_MERGES
+    embedding_dim = 16
+    emb_layer = token_embedding(VOCAB_SIZE, embedding_dim)
+    
+    try:
+        print(f"Passing inputs to Embedding Layer (Vocab={VOCAB_SIZE}, Dim={embedding_dim})...")
+        embedded_x = emb_layer(inputs)
+        print(f"Output Embedding Shape: {embedded_x.shape}")
+        print(emb_layer.weight)
+        print("✅ SUCCESS: Indices fit within Embedding layer.")
+        print(emb_layer(torch.tensor([3])))
+    except IndexError as e:
+        print(f"❌ FAILURE: Index Error. Your tokenizer produced an ID larger than the Embedding vocab size.")
+        print(f"Max ID in input: {inputs.max()}, Embedding Size: {VOCAB_SIZE}")
+        print(f"Error details: {e}")

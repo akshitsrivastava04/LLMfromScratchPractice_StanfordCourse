@@ -38,6 +38,11 @@ def token_embedding(vocab_size, output_dim):
     embedding_layer = Embedding(vocab_size, output_dim)
     return embedding_layer
 
+def pos_encoding(max_length, output_dim):
+    pos_enc_layer = torch.nn.Embedding(max_length, output_dim)
+    pos_embeddings = pos_enc_layer(torch.arange(max_length))
+    return pos_embeddings
+
 if __name__ == "__main__":
     filename = "TinyStories-valid.txt"
     download_tinystories(filename)
@@ -75,19 +80,16 @@ if __name__ == "__main__":
     print(f"Input example: {inputs[0]}")
     print(f"Target example: {targets[0]}")
     
-    # --- SANITY CHECK 3: Do inputs and targets differ? ---
-    # The target must be the input shifted by 1.
-    # We check if the last token of input matches the 2nd-to-last of target
     is_shifted = inputs[0][1] == targets[0][0]
     print(f"Shift logic holds: {is_shifted}")
 
     print("\n--- 4. TEST EMBEDDING COMPATIBILITY ---")
-    # This checks if your Tokenizer IDs exceed the Embedding Layer size (IndexError)
+   
     NUM_MERGES = 100
     VOCAB_SIZE = 256 + NUM_MERGES
     embedding_dim = 16
     emb_layer = token_embedding(VOCAB_SIZE, embedding_dim)
-    
+    token_embeddings = emb_layer(inputs)
     try:
         print(f"Passing inputs to Embedding Layer (Vocab={VOCAB_SIZE}, Dim={embedding_dim})...")
         embedded_x = emb_layer(inputs)
@@ -99,3 +101,13 @@ if __name__ == "__main__":
         print(f"❌ FAILURE: Index Error. Your tokenizer produced an ID larger than the Embedding vocab size.")
         print(f"Max ID in input: {inputs.max()}, Embedding Size: {VOCAB_SIZE}")
         print(f"Error details: {e}")
+
+    print("--TESTING POS ENCODING")
+    pos_embeddings = pos_encoding(max_length=4, output_dim=embedding_dim)
+    print(pos_embeddings)
+    print(pos_embeddings.shape)
+    print("✅ SUCCESS: Pos Embedding shape matches expected.")
+    input_embeddings = token_embeddings + pos_embeddings
+    print(input_embeddings)
+    print(input_embeddings.shape)
+    print("✅ SUCCESS: Input Embedding shape matches expected.")

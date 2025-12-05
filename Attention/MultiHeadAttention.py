@@ -1,5 +1,6 @@
 import torch 
-from SelfAttention import Linear, Dropout
+from Layers.Linear import Linear 
+from Layers.Dropout import Dropout 
 import torch.nn as nn
 import torch.nn.functional as F
 import math

@@ -8,16 +8,31 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, d_in, d_out, context_length, dropout, num_heads,qkv_bias=False):
         super().__init__()
         assert (d_out % num_heads == 0), "d_out must be divisible by num_heads"
+        
         self.d_out = d_out 
         self.num_heads = num_heads
         self.head_dim = d_out // num_heads
+        self.context_length = context_length
+
         self.W_query = Linear(d_in, d_out, bias=qkv_bias)
         self.W_key = Linear(d_in, d_out, bias=qkv_bias)
         self.W_value = Linear(d_in, d_out, bias=qkv_bias)
         self.dropout = Dropout(dropout)
+        
         mask = torch.triu(torch.ones(context_length, context_length), diagonal=1).bool()
         self.register_buffer("mask", mask)
         self.out_proj = Linear(d_out, d_out)
+
+
+        #-----KV Cache-----
+        self.register_buffer("cache_k", torch.empty(0), persistent=False)
+        self.register_buffer("cache_v", torch.empty(0), persistent=False)
+        self.ptr_current_pos = 0
+
+    def _init_cache(self, batch_size, device, dtype):
+        self.cache_k = torch.zeros(batch_size, self.num_heads, self.context_length, self.head_dim, device=device, dtype=dtype)
+        self.cache_v = torch.zeros(batch_size, self.num_heads, self.context_length, self.head_dim, device=device, dtype=dtype)
+        self.ptr_current_pos = 0
 
     def forward(self,x):
         b, num_tokens, d_in = x.shape
@@ -33,7 +48,30 @@ class MultiHeadAttention(nn.Module):
         keys = keys.transpose(1, 2)
         queries = queries.transpose(1, 2)
         values = values.transpose(1, 2)
+        #--- Handling KV Caching ---
 
+        if use_cache:
+            if self.cache_k.numel() == 0 or self.cache_k.shape[0] != b:
+                self._init_cache(batch_size=b, device=x.device, dtype=keys.dtype)
+
+            assert self.ptr_current_pos + num_tokens <= self.context_length, (
+                f"Cache overflow: ptr {self.ptr_current_pos} + tokens {num_tokens} > context_length {self.context_length}"
+            )
+
+            self.cache_k[:, :, self.ptr_current_pos: self.ptr_current_pos + num_tokens, :] = keys 
+            self.cache_v[:, :, self.ptr_current_post: self.ptr_current_pos + num_tokens, :] = values 
+
+            self.ptr_current_pos += num_tokens
+            keys = self.cache_k[:, :self.ptr_current_pos, :]
+            values = self.cache_v[:, :, :self.ptr_current_pos, :]
+            num_k = self.ptr_current_pos
+            num_q = num_tokens
+        else: 
+            keys = keys
+            values = values 
+            num_k = num_q = num_tokens 
+            self.ptr_current_pos = 0 
+            
         attn_scores = torch.einsum("bnqd,bnkd->bnqk", queries, keys)
 
         mask_bool = self.mask[:num_tokens, :num_tokens]
@@ -44,7 +82,12 @@ class MultiHeadAttention(nn.Module):
         context_vec = context_vec.transpose(1, 2).contiguous().view(b, num_tokens, self.d_out)
         context_vec = self.out_proj(context_vec)
         
-        return context_vec
+        return context_vec 
+
+    def reset_cache(self):
+        self.cache_k = torch.empty(0)
+        self.cache_v = torch.empty(0)
+        self.ptr_current_pos = 0
 
 if __name__ == "__main__":
     print("="*60)

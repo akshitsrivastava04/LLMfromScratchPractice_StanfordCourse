@@ -35,7 +35,7 @@ class MultiHeadAttention(nn.Module):
         self.cache_v = torch.zeros(batch_size, self.num_heads, self.context_length, self.head_dim, device=device, dtype=dtype)
         self.ptr_current_pos = 0
 
-    def forward(self,x):
+    def forward(self,x, use_cache=False):
         b, num_tokens, d_in = x.shape
         assert num_tokens <= self.mask.shape[0], "Input sequence exceeds maximum context length"
         keys = self.W_key(x)
@@ -60,7 +60,7 @@ class MultiHeadAttention(nn.Module):
             )
 
             self.cache_k[:, :, self.ptr_current_pos: self.ptr_current_pos + num_tokens, :] = keys 
-            self.cache_v[:, :, self.ptr_current_post: self.ptr_current_pos + num_tokens, :] = values 
+            self.cache_v[:, :, self.ptr_current_pos: self.ptr_current_pos + num_tokens, :] = values 
 
             self.ptr_current_pos += num_tokens
             keys = self.cache_k[:, :self.ptr_current_pos, :]

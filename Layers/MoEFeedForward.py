@@ -10,14 +10,17 @@ import math
 class FeedForward(nn.Module):
     def __init__(self, cfg):
         super().__init__()
+        hidden_dim = 4 * cfg["emb_dim"]
         self.layers = nn.Sequential(
-            Linear(cfg["emb_dim"], cfg["hidden_dim"]),
-            SwiGLU(),
-            Linear(cfg["hidden_dim"], cfg["emb_dim"]),
+            SwiGLU(cfg["emb_dim"], hidden_dim),
+            Linear(hidden_dim, cfg["emb_dim"]),
         )
-
-    def forward(self, x):
-        return self.layers(x)
+    
+    def forward(self, x, return_aux_loss=False):
+        output = self.layers(x)
+        if return_aux_loss:
+            return output, None
+        return output
 
 class MoEFeedForward(nn.Module):
     def __init__(self, cfg):
@@ -28,7 +31,7 @@ class MoEFeedForward(nn.Module):
         self.hidden_dim = cfg["hidden_dim"]
 
         self.load_balance_alpha = cfg.get("load_balance_alpha", 0.01)
-        #self.capacity_factor = cfg.get("capacity_factor", 1.25)
+        self.capacity_factor = cfg.get("capacity_factor", 1.5)
 
         self.norm = RMSnorm(cfg["emb_dim"])
         self.gate = Linear(cfg["emb_dim"], cfg["num_experts"], bias=False)
@@ -65,8 +68,8 @@ class MoEFeedForward(nn.Module):
         return load_balance_loss
 
     def forward(self, x, return_aux_loss=True):
+        batch, seq_len, _ = x.shape 
         x_norm = self.norm(x)
-        batch, seq_len, _ = x_norm.shape 
         
 
         router_logits = self.gate(x_norm)
@@ -76,19 +79,35 @@ class MoEFeedForward(nn.Module):
         topk_probs, topk_indices = torch.topk(router_probs, self.num_experts_per_tok, dim=-1)
         topk_probs = topk_probs / (topk_probs.sum(dim=-1, keepdim=True) + 1e-10)
         x_flat = x_norm.reshape(-1, self.emb_dim)
-        #----- Adding Sparsity for Mixture of Experts
-        w1_active = self.w1[topk_indices]
-        w2_active = self.w2[topk_indices]
-        w3_active = self.w3[topk_indices]
+        num_tokens = x_flat.shape[0]
 
-        x_expanded = x_flat.unsqueeze(1)
-        h1 = torch.einsum("bld, bldh -> blh", x_expanded, w1_active)  
-        h2 = torch.einsum("bld, bldh -> blh", x_expanded, w2_active)
+        capacity = int(self.capacity_factor * num_tokens * self.num_experts_per_tok / self.num_experts) 
+
+        expert_mask = F.one_hot(topk_indices, num_classes=self.num_experts)
+        expert_mask = expert_mask.permute(2,1,0)
+
+        position_in_expert = torch.cumsum(expert_mask, dim=2) * expert_mask
+        position_in_expert = position_in_expert - 1
+
+        dispatch_mask = (position_in_expert.unsqueeze(2) == torch.arange(capacity, device=x.device).view(1,1,capacity, 1))
+        dispatch_mask = dispatch_mask.any(dim=1)
+
+        expert_inputs = torch.einsum("ect,td->ecd", dispatch_mask.float(), x_flat)
+
+        h1 = torch.einsum("ecd,edh->ech", expert_inputs, self.w1)
+        h2 = torch.einsum("ecd,edh->ech", expert_inputs, self.w2)
+
         hidden = F.silu(h1) * h2
-        expert_outputs = torch.einsum("blh, blhd -> bld", hidden, w3_active)
-        results = expert_outputs * topk_probs.unsqueeze(-1)
         
-        output = results.sum(dim=1)
+        expert_outputs = torch.einsum("ech,ehd->ecd", hidden, self.w3)
+        routing_weights = torch.zeros(self.num_experts, self.num_experts_per_tok, num_tokens, device=x.device)
+        expert_ids = topk_indices.permute(1, 0)  # [k, num_tokens]
+        token_ids = torch.arange(num_tokens, device=x.device).unsqueeze(0).expand(self.num_experts_per_tok, -1)  
+        k_ids = torch.arange(self.num_experts_per_tok, device=x.device).unsqueeze(1).expand(-1, num_tokens) 
+        
+        routing_weights[expert_ids.reshape(-1), k_ids.reshape(-1), token_ids.reshape(-1)] = topk_probs.permute(1, 0).reshape(-1)
+        combine_weights = torch.einsum("ekt,ect->ect", routing_weights, dispatch_mask.float())
+        output = torch.einsum("ect,ecd->td", combine_weights, expert_outputs)
         
         aux_loss = None 
         if return_aux_loss and self.training:
